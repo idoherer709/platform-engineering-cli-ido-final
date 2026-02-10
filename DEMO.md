@@ -18,4 +18,15 @@ Listing instances with tag CreatedBy=platform-cli...
 - ID: i-0abffadbb120e4bf7, Type: t2.micro, State: running
   Tags: Owner=Ido, Env=dev
 
-  
+  ### 3. Stop Instance
+Command: `python main.py ec2 stop i-04c62ec8327c1cc7e`
+Output:
+Stopping instance i-04c62ec8327c1cc7e...
+Instance i-04c62ec8327c1cc7e stopped successfully.
+
+
+### 4. Start Instance
+Command: `python main.py ec2 start i-04c62ec8327c1cc7e`
+Output:
+Starting instance i-04c62ec8327c1cc7e...
+Instance i-04c62ec8327c1cc7e is now running.
