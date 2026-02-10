@@ -2,6 +2,7 @@ import click
 import boto3
 import sys
 import os
+import time
 from botocore.exceptions import ClientError
 
 # קבועים (Constants)
@@ -235,13 +236,11 @@ def upload(bucket_name, file_path):
     s3_resource = boto3.resource('s3')
     bucket = s3_resource.Bucket(bucket_name)
     
-    # בדיקה שהקובץ המקומי קיים
     if not os.path.exists(file_path):
         click.echo(f"Error: File '{file_path}' not found.")
         sys.exit(1)
 
     try:
-        # בדיקה שהדלי שייך לנו (Tag Validation)
         click.echo(f"Verifying bucket '{bucket_name}' ownership...")
         tag_set = bucket.Tagging().tag_set
         tags = {t['Key']: t['Value'] for t in tag_set}
@@ -250,7 +249,6 @@ def upload(bucket_name, file_path):
             click.echo(f"Error: Bucket '{bucket_name}' was not created by this CLI. Access denied.")
             sys.exit(1)
             
-        # העלאת הקובץ
         file_name = os.path.basename(file_path)
         click.echo(f"Uploading '{file_name}' to '{bucket_name}'...")
         
@@ -259,6 +257,142 @@ def upload(bucket_name, file_path):
         
     except ClientError as e:
         click.echo(f"Error: {e}")
+
+
+# --- Route53 Group ---
+@cli.group()
+def route53():
+    """Manage Route53 DNS zones and records."""
+    pass
+
+@route53.command()
+def list():
+    """List CLI-created Hosted Zones."""
+    client = boto3.client('route53')
+    
+    click.echo(f"Listing Hosted Zones with tag {TAG_NAME}={TAG_VALUE}...")
+    
+    try:
+        response = client.list_hosted_zones()
+        zones = response['HostedZones']
+        
+        found_any = False
+        for zone in zones:
+            zone_id = zone['Id'].split('/')[-1]
+            zone_name = zone['Name']
+            
+            try:
+                tags_response = client.list_tags_for_resource(ResourceType='hostedzone', ResourceId=zone_id)
+                tag_list = tags_response['ResourceTagSet']['Tags']
+                tags = {t['Key']: t['Value'] for t in tag_list}
+                
+                if tags.get(TAG_NAME) == TAG_VALUE:
+                    click.echo(f"- Zone ID: {zone_id}")
+                    click.echo(f"  Name: {zone_name}")
+                    click.echo(f"  Tags: Owner={tags.get('Owner')}, Env={tags.get('Environment')}")
+                    found_any = True
+                    
+            except ClientError:
+                continue
+                
+        if not found_any:
+            click.echo("No CLI-created zones found.")
+            
+    except ClientError as e:
+        click.echo(f"Error listing zones: {e}")
+
+@route53.command()
+@click.argument('zone_name')
+@click.option('--owner', required=True, help='Name of the owner')
+@click.option('--project', required=True, help='Project name')
+@click.option('--env', type=click.Choice(['dev', 'test', 'prod']), required=True, help='Environment')
+def create(zone_name, owner, project, env):
+    """Create a new Route53 Hosted Zone."""
+    client = boto3.client('route53')
+    
+    click.echo(f"Creating Hosted Zone '{zone_name}'...")
+
+    try:
+        caller_ref = f"{zone_name}-{int(time.time())}"
+        
+        response = client.create_hosted_zone(
+            Name=zone_name,
+            CallerReference=caller_ref,
+            HostedZoneConfig={
+                'Comment': f'Created by Platform CLI for {project} in {env}'
+            }
+        )
+        
+        full_zone_id = response['HostedZone']['Id']
+        short_zone_id = full_zone_id.split('/')[-1]
+        
+        click.echo(f"Zone created! ID: {short_zone_id}")
+        
+        click.echo("Applying tags...")
+        client.change_tags_for_resource(
+            ResourceType='hostedzone',
+            ResourceId=short_zone_id,
+            AddTags=[
+                {'Key': TAG_NAME, 'Value': TAG_VALUE},
+                {'Key': 'Owner', 'Value': owner},
+                {'Key': 'Project', 'Value': project},
+                {'Key': 'Environment', 'Value': env}
+            ]
+        )
+        
+        click.echo("Success! Hosted Zone ready.")
+
+    except ClientError as e:
+        click.echo(f"Error: {e}")
+
+@route53.command()
+@click.argument('zone_id')
+@click.argument('record_name')
+@click.argument('record_value')
+@click.option('--type', 'record_type', default='A', help='Record type (A, CNAME, etc.)')
+def record(zone_id, record_name, record_value, record_type):
+    """Create or update a DNS record in a CLI-created Zone."""
+    client = boto3.client('route53')
+    
+    # בדיקת שייכות (Guardrail)
+    try:
+        tags_response = client.list_tags_for_resource(ResourceType='hostedzone', ResourceId=zone_id)
+        tag_list = tags_response['ResourceTagSet']['Tags']
+        tags = {t['Key']: t['Value'] for t in tag_list}
+        
+        if tags.get(TAG_NAME) != TAG_VALUE:
+            click.echo(f"Error: Zone {zone_id} was not created by this CLI. Access denied.")
+            sys.exit(1)
+            
+    except ClientError as e:
+        click.echo(f"Error checking zone tags: {e}")
+        return
+
+    click.echo(f"Creating/Updating record {record_name} -> {record_value} ({record_type}) in {zone_id}...")
+
+    try:
+        response = client.change_resource_record_sets(
+            HostedZoneId=zone_id,
+            ChangeBatch={
+                'Comment': 'Managed by Platform CLI',
+                'Changes': [
+                    {
+                        'Action': 'UPSERT',
+                        'ResourceRecordSet': {
+                            'Name': record_name,
+                            'Type': record_type,
+                            'TTL': 300,
+                            'ResourceRecords': [{'Value': record_value}]
+                        }
+                    }
+                ]
+            }
+        )
+        click.echo("Success! Record change submitted.")
+        click.echo(f"Status: {response['ChangeInfo']['Status']}")
+        
+    except ClientError as e:
+        click.echo(f"Error creating record: {e}")
 
 if __name__ == '__main__':
     cli()

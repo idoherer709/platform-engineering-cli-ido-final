@@ -54,3 +54,27 @@ Verifying bucket 'platform-cli-ido-test-1' ownership...
 Uploading 'hello.txt' to 'platform-cli-ido-test-1'...
 Success! File uploaded.
 
+## Route53 Operations
+
+### 1. Create Hosted Zone
+Command: `python main.py route53 create ido-platform-test.com --owner Ido --project DemoDNS --env dev`
+Output:
+Creating Hosted Zone 'ido-platform-test.com'...
+Zone created! ID: Z102252719CBK2BJKXLQC
+Applying tags...
+Success! Hosted Zone ready.
+
+### 2. List Hosted Zones
+Command: `python main.py route53 list`
+Output:
+- Zone ID: Z102252719CBK2BJKXLQC
+  Name: ido-platform-test.com.
+  Tags: Owner=Ido, Env=dev
+
+
+### 3. Create DNS Record
+Command: `python main.py route53 record Z102252719CBK2BJKXLQC www.ido-platform-test.com 54.167.108.95`
+Output:
+reating/Updating record www.ido-platform-test.com -> 54.167.108.95 (A) in Z102252719CBK2BJKXLQC...
+Success! Record change submitted.
+Status: PENDING
