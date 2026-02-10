@@ -1,16 +1,15 @@
 import click
 import boto3
 import sys
+import os
+from botocore.exceptions import ClientError
 
 # קבועים (Constants)
 TAG_NAME = 'CreatedBy'
 TAG_VALUE = 'platform-cli'
 
 def get_latest_ami():
-    """
-    Helper function to get the latest Amazon Linux 2 AMI ID 
-    from AWS Systems Manager (SSM) Parameter Store.
-    """
+    """Helper function to get the latest Amazon Linux 2 AMI ID."""
     ssm_client = boto3.client('ssm')
     response = ssm_client.get_parameter(
         Name='/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2',
@@ -33,13 +32,11 @@ def ec2():
 @click.option('--owner', required=True, help='Name of the owner')
 @click.option('--project', required=True, help='Project name')
 @click.option('--env', type=click.Choice(['dev', 'test', 'prod']), required=True, help='Environment')
-@click.option('--type', 'instance_type', type=click.Choice(['t2.micro', 't3.micro']), default='t2.micro', help='Instance type (t2.micro or t3.micro)')
+@click.option('--type', 'instance_type', type=click.Choice(['t2.micro', 't3.micro']), default='t2.micro', help='Instance type')
 def create(owner, project, env, instance_type):
     """Create a new EC2 instance."""
     ec2_resource = boto3.resource('ec2')
     
-    # 1. בדיקת מכסה (Hard Cap: 2)
-    # סופרים כמה שרתים פעילים כבר יש לנו עם התגית שלנו
     instances = ec2_resource.instances.filter(
         Filters=[{'Name': f'tag:{TAG_NAME}', 'Values': [TAG_VALUE]}]
     )
@@ -49,18 +46,15 @@ def create(owner, project, env, instance_type):
         click.echo("Error: Cannot create more than 2 instances via CLI (Hard Cap Reached).")
         return
 
-    # 2. השגת ה-AMI העדכני ביותר באופן דינמי
     click.echo("Fetching latest Amazon Linux 2 AMI...")
     try:
         ami_id = get_latest_ami()
-        click.echo(f"Found AMI: {ami_id}")
     except Exception as e:
         click.echo(f"Error fetching AMI: {e}")
         return
 
     click.echo(f"Creating EC2 instance ({instance_type}) for {owner} in {env}...")
 
-    # 3. יצירת השרת בפועל
     try:
         new_instances = ec2_resource.create_instances(
             ImageId=ami_id,
@@ -80,17 +74,14 @@ def create(owner, project, env, instance_type):
                 }
             ]
         )
-        
         instance = new_instances[0]
         click.echo("Waiting for instance to start running...")
         instance.wait_until_running() 
         instance.reload() 
-        
         click.echo(f"Success! Instance created.")
         click.echo(f"ID: {instance.id}")
         click.echo(f"State: {instance.state['Name']}")
         click.echo(f"Public IP: {instance.public_ip_address}")
-        
     except Exception as e:
         click.echo(f"Error creating instance: {e}")
 
@@ -98,77 +89,175 @@ def create(owner, project, env, instance_type):
 def list():
     """List CLI-created instances."""
     ec2_resource = boto3.resource('ec2')
-    
-    # סינון: רק שרתים שהכלי הזה יצר
     instances = ec2_resource.instances.filter(
-        Filters=[
-            {'Name': f'tag:{TAG_NAME}', 'Values': [TAG_VALUE]}
-        ]
+        Filters=[{'Name': f'tag:{TAG_NAME}', 'Values': [TAG_VALUE]}]
     )
-
     click.echo(f"Listing instances with tag {TAG_NAME}={TAG_VALUE}...")
-    
     count = 0
     for instance in instances:
-        # מדלגים על שרתים מחוקים בתצוגה
         if instance.state['Name'] == 'terminated':
             continue
-            
         click.echo(f"- ID: {instance.id}, Type: {instance.instance_type}, State: {instance.state['Name']}")
         tags_dict = {tag['Key']: tag['Value'] for tag in instance.tags} if instance.tags else {}
         click.echo(f"  Tags: Owner={tags_dict.get('Owner')}, Env={tags_dict.get('Environment')}")
         count += 1
-    
     if count == 0:
         click.echo("No active instances found.")
 
 @ec2.command()
 @click.argument('instance_id')
 def stop(instance_id):
-    """Stop an EC2 instance (only if created by CLI)."""
+    """Stop an EC2 instance."""
     ec2_resource = boto3.resource('ec2')
     instance = ec2_resource.Instance(instance_id)
-
     try:
-        # בדיקה שהשרת קיים ושייך לנו (Tag Validation)
-        instance.load() # טוען את המידע עליו
+        instance.load()
         tags = {t['Key']: t['Value'] for t in instance.tags or []}
-        
-        # אבטחה: אם התגית לא קיימת או לא תואמת, חוסמים את הפעולה
         if tags.get(TAG_NAME) != TAG_VALUE:
-            click.echo(f"Error: Instance {instance_id} was not created by this CLI. Access denied.")
+            click.echo(f"Error: Instance {instance_id} not managed by CLI.")
             sys.exit(1)
-            
-        click.echo(f"Stopping instance {instance_id}...")
+        click.echo(f"Stopping {instance_id}...")
         instance.stop()
         instance.wait_until_stopped()
-        click.echo(f"Instance {instance_id} stopped successfully.")
-        
+        click.echo("Stopped.")
     except Exception as e:
         click.echo(f"Error: {e}")
 
 @ec2.command()
 @click.argument('instance_id')
 def start(instance_id):
-    """Start an EC2 instance (only if created by CLI)."""
+    """Start an EC2 instance."""
     ec2_resource = boto3.resource('ec2')
     instance = ec2_resource.Instance(instance_id)
-
     try:
-        # בדיקה שהשרת קיים ושייך לנו
         instance.load()
         tags = {t['Key']: t['Value'] for t in instance.tags or []}
-        
         if tags.get(TAG_NAME) != TAG_VALUE:
-            click.echo(f"Error: Instance {instance_id} was not created by this CLI. Access denied.")
+            click.echo(f"Error: Instance {instance_id} not managed by CLI.")
             sys.exit(1)
-            
-        click.echo(f"Starting instance {instance_id}...")
+        click.echo(f"Starting {instance_id}...")
         instance.start()
         instance.wait_until_running()
-        click.echo(f"Instance {instance_id} is now running.")
-        
+        click.echo("Running.")
     except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+# --- S3 Group ---
+@cli.group()
+def s3():
+    """Manage S3 buckets."""
+    pass
+
+@s3.command()
+def list():
+    """List CLI-created buckets."""
+    s3_resource = boto3.resource('s3')
+    
+    click.echo(f"Listing buckets with tag {TAG_NAME}={TAG_VALUE}...")
+    
+    found_any = False
+    for bucket in s3_resource.buckets.all():
+        try:
+            tag_set = bucket.Tagging().tag_set
+            tags = {t['Key']: t['Value'] for t in tag_set}
+            
+            if tags.get(TAG_NAME) == TAG_VALUE:
+                click.echo(f"- Name: {bucket.name}")
+                click.echo(f"  Tags: Owner={tags.get('Owner')}, Env={tags.get('Environment')}")
+                found_any = True
+                
+        except ClientError:
+            continue
+            
+    if not found_any:
+        click.echo("No buckets found.")
+
+@s3.command()
+@click.argument('bucket_name')
+@click.option('--owner', required=True, help='Name of the owner')
+@click.option('--project', required=True, help='Project name')
+@click.option('--env', type=click.Choice(['dev', 'test', 'prod']), required=True, help='Environment')
+@click.option('--public', is_flag=True, help='Make bucket public (READ ONLY)')
+def create(bucket_name, owner, project, env, public):
+    """Create a new S3 bucket."""
+    s3_resource = boto3.resource('s3')
+    
+    if public:
+        click.confirm(f"WARNING: You are about to make bucket '{bucket_name}' PUBLIC. Are you sure?", abort=True)
+        acl = 'public-read'
+    else:
+        acl = 'private'
+
+    click.echo(f"Creating {acl} bucket '{bucket_name}'...")
+
+    try:
+        session = boto3.session.Session()
+        region = session.region_name
+        
+        create_params = {
+            'Bucket': bucket_name,
+            'ACL': acl
+        }
+        if region != 'us-east-1':
+            create_params['CreateBucketConfiguration'] = {'LocationConstraint': region}
+
+        bucket = s3_resource.create_bucket(**create_params)
+        
+        bucket_tagging = s3_resource.BucketTagging(bucket_name)
+        bucket_tagging.put(
+            Tagging={
+                'TagSet': [
+                    {'Key': TAG_NAME, 'Value': TAG_VALUE},
+                    {'Key': 'Owner', 'Value': owner},
+                    {'Key': 'Project', 'Value': project},
+                    {'Key': 'Environment', 'Value': env}
+                ]
+            }
+        )
+        
+        click.echo(f"Success! Bucket '{bucket_name}' created successfully.")
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'BucketAlreadyExists':
+            click.echo(f"Error: The bucket name '{bucket_name}' is already taken. Try a different name.")
+        elif error_code == 'BucketAlreadyOwnedByYou':
+            click.echo(f"Error: You already own a bucket named '{bucket_name}'.")
+        else:
+            click.echo(f"Error creating bucket: {e}")
+
+@s3.command()
+@click.argument('bucket_name')
+@click.argument('file_path')
+def upload(bucket_name, file_path):
+    """Upload a file to an S3 bucket (only if created by CLI)."""
+    s3_resource = boto3.resource('s3')
+    bucket = s3_resource.Bucket(bucket_name)
+    
+    # בדיקה שהקובץ המקומי קיים
+    if not os.path.exists(file_path):
+        click.echo(f"Error: File '{file_path}' not found.")
+        sys.exit(1)
+
+    try:
+        # בדיקה שהדלי שייך לנו (Tag Validation)
+        click.echo(f"Verifying bucket '{bucket_name}' ownership...")
+        tag_set = bucket.Tagging().tag_set
+        tags = {t['Key']: t['Value'] for t in tag_set}
+        
+        if tags.get(TAG_NAME) != TAG_VALUE:
+            click.echo(f"Error: Bucket '{bucket_name}' was not created by this CLI. Access denied.")
+            sys.exit(1)
+            
+        # העלאת הקובץ
+        file_name = os.path.basename(file_path)
+        click.echo(f"Uploading '{file_name}' to '{bucket_name}'...")
+        
+        bucket.upload_file(file_path, file_name)
+        click.echo("Success! File uploaded.")
+        
+    except ClientError as e:
         click.echo(f"Error: {e}")
 
 if __name__ == '__main__':

@@ -30,3 +30,27 @@ Command: `python main.py ec2 start i-04c62ec8327c1cc7e`
 Output:
 Starting instance i-04c62ec8327c1cc7e...
 Instance i-04c62ec8327c1cc7e is now running.
+
+
+## S3 Operations
+
+### 1. Create Private Bucket
+Command: `python main.py s3 create platform-cli-ido-test-1 --owner Ido --project DemoS3 --env dev`
+Output:
+Creating private bucket 'platform-cli-ido-test-1'...
+Success! Bucket 'platform-cli-ido-test-1' created successfully.
+
+### 2. Create Public Bucket (Guardrail Check)
+Command: `python main.py s3 create platform-cli-ido-public-1 --owner Ido --project DemoS3 --env dev --public`
+Output:
+WARNING: You are about to make bucket 'platform-cli-ido-public-1' PUBLIC. Are you sure? [y/N]: N
+Aborted!
+
+
+### 3. Upload File (Ownership Check)
+Command: `python main.py s3 upload platform-cli-ido-test-1 hello.txt`
+Output:
+Verifying bucket 'platform-cli-ido-test-1' ownership...
+Uploading 'hello.txt' to 'platform-cli-ido-test-1'...
+Success! File uploaded.
+
